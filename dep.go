@@ -1,7 +1,6 @@
 package main
 
 import (
-	"code.google.com/p/go.tools/go/vcs"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -13,6 +12,8 @@ import (
 	"runtime"
 	"sort"
 	"strings"
+
+	"golang.org/x/tools/go/vcs"
 )
 
 // Godeps describes what a package needs to be rebuilt reproducibly.
@@ -32,9 +33,14 @@ type Dependency struct {
 	Comment    string `json:",omitempty"` // Description of commit, if present.
 	Rev        string // VCS-specific commit ID.
 
-	// used by command save
-	ws  string // workspace
-	dir string // full path to repo root
+	// used by command save & update
+	ws   string // workspace
+	root string // import path to repo root
+	dir  string // full path to package
+
+	// used by command update
+	matched bool // selected for update by command line
+	pkg     *Package
 
 	// used by command go
 	outerRoot string // dir, if present, in outer GOPATH
@@ -56,21 +62,25 @@ func (g *Godeps) Load(pkgs []*Package) error {
 			err1 = errors.New("error loading packages")
 			continue
 		}
-		_, reporoot, err := VCSFromDir(p.Dir, p.Root)
+		_, reporoot, err := VCSFromDir(p.Dir, filepath.Join(p.Root, "src"))
 		if err != nil {
 			log.Println(err)
 			err1 = errors.New("error loading packages")
 			continue
 		}
-		importPath := strings.TrimPrefix(reporoot, "src"+string(os.PathSeparator))
-		seen = append(seen, importPath+"/")
+		seen = append(seen, filepath.ToSlash(reporoot))
 		path = append(path, p.Deps...)
 	}
 	var testImports []string
 	for _, p := range pkgs {
 		testImports = append(testImports, p.TestImports...)
+		testImports = append(testImports, p.XTestImports...)
 	}
-	for _, p := range MustLoadPackages(testImports...) {
+	ps, err := LoadPackages(testImports...)
+	if err != nil {
+		return err
+	}
+	for _, p := range ps {
 		if p.Standard {
 			continue
 		}
@@ -82,9 +92,16 @@ func (g *Godeps) Load(pkgs []*Package) error {
 		path = append(path, p.ImportPath)
 		path = append(path, p.Deps...)
 	}
+	for i, p := range path {
+		path[i] = unqualify(p)
+	}
 	sort.Strings(path)
 	path = uniq(path)
-	for _, pkg := range MustLoadPackages(path...) {
+	ps, err = LoadPackages(path...)
+	if err != nil {
+		return err
+	}
+	for _, pkg := range ps {
 		if pkg.Error.Err != "" {
 			log.Println(pkg.Error.Err)
 			err1 = errors.New("error loading dependencies")
@@ -93,16 +110,16 @@ func (g *Godeps) Load(pkgs []*Package) error {
 		if pkg.Standard {
 			continue
 		}
-		vcs, _, err := VCSFromDir(pkg.Dir, pkg.Root)
+		vcs, reporoot, err := VCSFromDir(pkg.Dir, filepath.Join(pkg.Root, "src"))
 		if err != nil {
 			log.Println(err)
 			err1 = errors.New("error loading dependencies")
 			continue
 		}
-		if containsPrefix(seen, pkg.ImportPath) {
+		if containsPathPrefix(seen, pkg.ImportPath) {
 			continue
 		}
-		seen = append(seen, pkg.ImportPath+"/")
+		seen = append(seen, pkg.ImportPath)
 		id, err := vcs.identify(pkg.Dir)
 		if err != nil {
 			log.Println(err)
@@ -121,19 +138,43 @@ func (g *Godeps) Load(pkgs []*Package) error {
 			Comment:    comment,
 			dir:        pkg.Dir,
 			ws:         pkg.Root,
+			root:       filepath.ToSlash(reporoot),
 			vcs:        vcs,
 		})
 	}
 	return err1
 }
 
-func ReadGodeps(path string) (*Godeps, error) {
+func ReadGodeps(path string, g *Godeps) error {
 	f, err := os.Open(path)
 	if err != nil {
-		return nil, err
+		return err
 	}
+	return json.NewDecoder(f).Decode(g)
+}
+
+func copyGodeps(g *Godeps) *Godeps {
+	h := *g
+	h.Deps = make([]Dependency, len(g.Deps))
+	copy(h.Deps, g.Deps)
+	return &h
+}
+
+func eqDeps(a, b []Dependency) bool {
+	ok := true
+	for _, da := range a {
+		for _, db := range b {
+			if da.ImportPath == db.ImportPath && da.Rev != db.Rev {
+				ok = false
+			}
+		}
+	}
+	return ok
+}
+
+func ReadAndLoadGodeps(path string) (*Godeps, error) {
 	g := new(Godeps)
-	err = json.NewDecoder(f).Decode(g)
+	err := ReadGodeps(path, g)
 	if err != nil {
 		return nil, err
 	}
@@ -262,11 +303,13 @@ func (d Dependency) checkout() error {
 	return d.vcs.checkout(dir, d.Rev, d.RepoPath())
 }
 
-// containsPrefix returns whether any string in a
-// is a prefix of s.
-func containsPrefix(a []string, s string) bool {
-	for _, p := range a {
-		if strings.HasPrefix(s, p) {
+// containsPathPrefix returns whether any string in a
+// is s or a directory containing s.
+// For example, pattern ["a"] matches "a" and "a/b"
+// (but not "ab").
+func containsPathPrefix(pats []string, s string) bool {
+	for _, pat := range pats {
+		if pat == s || strings.HasPrefix(s, pat+"/") {
 			return true
 		}
 	}
@@ -286,19 +329,19 @@ func uniq(a []string) []string {
 	return a[:i]
 }
 
-// mustGoVersion returns the version string of the Go compiler
+// goVersion returns the version string of the Go compiler
 // currently installed, e.g. "go1.1rc3".
-func mustGoVersion() string {
+func goVersion() (string, error) {
 	// Godep might have been compiled with a different
 	// version, so we can't just use runtime.Version here.
 	cmd := exec.Command("go", "version")
 	cmd.Stderr = os.Stderr
 	out, err := cmd.Output()
 	if err != nil {
-		log.Fatal(err)
+		return "", err
 	}
 	s := strings.TrimSpace(string(out))
 	s = strings.TrimSuffix(s, " "+runtime.GOOS+"/"+runtime.GOARCH)
 	s = strings.TrimPrefix(s, "go version ")
-	return s
+	return s, nil
 }

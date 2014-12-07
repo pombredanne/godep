@@ -9,7 +9,7 @@ that works with Go 1 or newer.
 
 ### Install
 
-	$ go get github.com/kr/godep
+	$ go get github.com/tools/godep
 
 #### Getting Started
 
@@ -24,13 +24,13 @@ it's one command to start using:
 This will save a list of dependencies to the file Godeps/Godeps.json,
 and copy their source code into Godeps/_workspace.
 Read over its contents and make sure it looks reasonable.
-Then commit the file to version control.
+Then commit the whole Godeps directory to version control, [including _workspace](https://github.com/tools/godep/pull/123).
 
-You can omit the source code with the flag -copy=false.
-This means fewer files to store in your local repository, but
-subsequent invocations of `godep go` will need to access the
-network to fetch the appropriate source code later. Using the
-default behavior is faster and more reliable.
+#### Restore
+
+The `godep restore` command is the opposite of `godep save`.
+It will install the package versions specified in
+Godeps/Godeps.json to your GOPATH.
 
 #### Edit-test Cycle
 
@@ -38,14 +38,21 @@ default behavior is faster and more reliable.
 2. Run `godep go test`
 3. (repeat)
 
-#### Add or Update a Dependency
+#### Add a Dependency
 
-To add or update package foo/bar, do this:
+To add a new package foo/bar, do this:
 
-1. Run `godep restore`
-2. Run `go get -u foo/bar`
-3. Edit your code, if necessary, to import foo/bar.
-4. Run `godep save`
+1. Run `go get foo/bar`
+2. Edit your code to import foo/bar.
+3. Run `godep save` (or `godep save ./...`).
+
+#### Update a Dependency
+
+To update a package from your `$GOPATH`, do this:
+
+1. Run `go get -u foo/bar`
+2. Run `godep update foo/bar`. (You can use the `...` wildcard,
+for example `godep update foo/...`).
 
 Before committing the change, you'll probably want to inspect
 the changes to Godeps, for example with `git diff`,
@@ -68,6 +75,13 @@ GOPATH from its environment, for example the recently-released
 
 	$ GOPATH=`godep path`:$GOPATH
 	$ oracle -mode=implements .
+
+#### Old Format
+
+Old versions of godep wrote the dependency list to a file Godeps,
+and didn't copy source code. This mode no longer exists, but
+commands 'godep go' and 'godep path' will continue to read the old
+format for some time.
 
 ### File Format
 

@@ -63,7 +63,8 @@ func prepareGopath() (gopath string) {
 	if isDir {
 		return filepath.Join(dir, "Godeps", "_workspace")
 	}
-	g, err := ReadGodeps(filepath.Join(dir, "Godeps"))
+	log.Println(strings.TrimSpace(noSourceCodeWarning))
+	g, err := ReadAndLoadGodeps(filepath.Join(dir, "Godeps"))
 	if err != nil {
 		log.Fatalln(err)
 	}
@@ -87,13 +88,26 @@ func findGodeps() (dir string, isDir bool) {
 	return findInParents(wd, "Godeps")
 }
 
+// isRoot returns true iff a path is a root.
+// On Unix: "/".
+// On Windows: "C:\", "D:\", ...
+func isRoot(p string) bool {
+	p = filepath.Clean(p)
+	volume := filepath.VolumeName(p)
+
+	p = strings.TrimPrefix(p, volume)
+	p = filepath.ToSlash(p)
+
+	return p == "/"
+}
+
 // findInParents returns the path to the directory containing name
 // in dir or any ancestor, and whether name itself is a directory.
 // If name cannot be found, findInParents returns the empty string.
 func findInParents(dir, name string) (container string, isDir bool) {
 	for {
 		fi, err := os.Stat(filepath.Join(dir, name))
-		if os.IsNotExist(err) && dir == "/" {
+		if os.IsNotExist(err) && isRoot(dir) {
 			return "", false
 		}
 		if os.IsNotExist(err) {
@@ -151,3 +165,13 @@ func sandbox(d Dependency) (gopath string, err error) {
 	}
 	return d.Gopath(), nil
 }
+
+const noSourceCodeWarning = `
+warning: outdated Godeps missing source code
+
+The ability to read this format will be removed in the future.
+See http://goo.gl/RpYs8e for a discussion of the upcoming removal.
+
+To avoid this warning, ask the maintainer of this package to run
+'godep save' without flag -copy.
+`

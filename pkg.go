@@ -3,7 +3,6 @@ package main
 import (
 	"encoding/json"
 	"io"
-	"log"
 	"os"
 	"os/exec"
 )
@@ -15,21 +14,18 @@ type Package struct {
 	Deps       []string
 	Standard   bool
 
-	TestImports []string
+	GoFiles        []string
+	CgoFiles       []string
+	IgnoredGoFiles []string
+
+	TestGoFiles  []string
+	TestImports  []string
+	XTestGoFiles []string
+	XTestImports []string
 
 	Error struct {
 		Err string
 	}
-}
-
-// MustLoadPackages is like LoadPackages but it calls log.Fatal
-// if an error occurs.
-func MustLoadPackages(name ...string) []*Package {
-	p, err := LoadPackages(name...)
-	if err != nil {
-		log.Fatal(err)
-	}
-	return p
 }
 
 // LoadPackages loads the named packages using go list -json.
@@ -67,4 +63,13 @@ func LoadPackages(name ...string) (a []*Package, err error) {
 		return nil, err
 	}
 	return a, nil
+}
+
+func (p *Package) allGoFiles() (a []string) {
+	a = append(a, p.GoFiles...)
+	a = append(a, p.CgoFiles...)
+	a = append(a, p.TestGoFiles...)
+	a = append(a, p.XTestGoFiles...)
+	a = append(a, p.IgnoredGoFiles...)
+	return a
 }
